@@ -134,7 +134,7 @@ static bool initWifi()
 
 void app_main(void)
 {
-	initRGBLed();
+/*	initRGBLed();
 	ESP_LOGI("MAIN","initBack");
 	if(!initWifi())
 	{
@@ -145,8 +145,8 @@ void app_main(void)
 	{
 		setRGBColor(RGB_BLINK_SLOW,RGB_GREEN);
 		startHttpsTask();
-	}
+	}*/
 
-
+	ArduCam_init();
 }
 

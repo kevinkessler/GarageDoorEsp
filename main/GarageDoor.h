@@ -15,5 +15,6 @@ void init_mqtt(void);
 void stop_mqtt(void);
 void startHttpsTask(void);
 void setRGBColor(uint8_t blink,uint8_t color);
+void ArduCam_init(void);
 
 #endif /* MAIN_GARAGEDOOR_H_ */
