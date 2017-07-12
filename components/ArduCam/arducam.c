@@ -5,8 +5,12 @@
  *      Author: kevin
  */
 
+#include <stdbool.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "driver/i2c.h"
+#include "driver/spi_common.h"
+#include "driver/spi_master.h"
 #include "esp_log.h"
 #include "arducam.h"
 #include "ov5642_regs.h"
@@ -24,6 +28,9 @@
 #define ARDUCAM_I2C_PORT 0
 #define ARDUCAM_TAG "ArduCam"
 
+// Make Eclipse stop complaining
+#define true 1
+#define false 0
 
 /*
 static uint8_t wrSensorReg8_8(uint8_t regID, uint8_t regDat)
@@ -78,20 +85,46 @@ static uint8_t wrSensorReg16_8(uint16_t regID, uint8_t regDat)
 
 static uint8_t wrSensorRegs16_8(const struct sensor_reg reglist[])
 {
-	uint16_t reg_addr=0x0000;
-	uint8_t reg_val=0x00;
 
 	const struct sensor_reg *next=reglist;
+	uint16_t reg_addr=next->reg;
+	uint8_t reg_val=next->val;
 
-	// Might be a bug, FFFF will be written with FF
+	//i2c_cmd_handle_t i2c_handle=i2c_cmd_link_create();
+
 	while((reg_addr != 0xffff) | (reg_val != 0xff))
 	{
-		reg_addr=next->reg;
-		reg_val=next->val;
 		wrSensorReg16_8(reg_addr,reg_val);
 		next++;
+		reg_addr=next->reg;
+		reg_val=next->val;
+
+
+/*		*cmd= (ARDUCAM_ADDR) | I2C_MASTER_WRITE;
+		*(cmd+1) = (reg_addr >> 8) & 0xff;
+		*(cmd+2) = reg_addr & 0xff;
+
+		ESP_LOGI(ARDUCAM_TAG,"CMD %x %x %x", *cmd,*(cmd+1),*(cmd+2));
+	    i2c_master_start(i2c_handle);
+	    i2c_master_write(i2c_handle,cmd,3,true);
+	    i2c_master_write_byte(i2c_handle,reg_val,true);*/
+
+
+
 	}
 
+/*    i2c_master_stop(i2c_handle);
+
+    err=i2c_master_cmd_begin(ARDUCAM_I2C_PORT,i2c_handle, 1000 / portTICK_RATE_MS);
+    i2c_cmd_link_delete(i2c_handle);
+    free(cmd_mem);
+
+    if(err == ESP_OK)
+    	return 1;
+
+    ESP_LOGW("ARDUCAM_TAG","wrSensorRegs16_8 returned %x",err);
+    	return 0;
+*/
 	return 1;
 
 }
@@ -109,9 +142,11 @@ static uint8_t rdSensorReg16_8(uint16_t regID, uint8_t *regDat)
     i2c_master_start(i2c_handle);
     i2c_master_write(i2c_handle,cmd,3,true);
 
-    i2c_master_stop(i2c_handle);
-
+    i2c_master_start(i2c_handle);
+    i2c_master_write_byte(i2c_handle,(ARDUCAM_ADDR) | I2C_MASTER_READ,true);
     i2c_master_read_byte(i2c_handle,regDat,true);
+
+    i2c_master_stop(i2c_handle);
 
     err=i2c_master_cmd_begin(ARDUCAM_I2C_PORT,i2c_handle, 1000 / portTICK_RATE_MS);
     i2c_cmd_link_delete(i2c_handle);
@@ -147,7 +182,6 @@ void ArduCam_set_RAW_size(uint8_t size)
 
 void ArduCam_set_JPEG_size(uint8_t size)
 {
-  uint8_t reg_val;
 
   switch (size)
   {
@@ -818,9 +852,9 @@ void ArduCam_Test_Pattern(uint8_t Pattern)
 
 }
 
-void ArduCam_init()
+static void initI2C()
 {
-    i2c_config_t conf;
+	i2c_config_t conf;
     esp_err_t err;
 
     conf.mode=I2C_MODE_MASTER;
@@ -831,10 +865,77 @@ void ArduCam_init()
     conf.master.clk_speed=ARDUCAM_I2C_FREQ_HZ;
 
     err=i2c_param_config(ARDUCAM_I2C_PORT, &conf);
-    ESP_LOGI(ARDUCAM_TAG,"ESP_OK = %x i2c_param_conf returned %x",ESP_OK,err);
+    if(err != ESP_OK)
+    	ESP_LOGW(ARDUCAM_TAG,"i2c_param_config returned %x",err);
 
     i2c_driver_install(ARDUCAM_I2C_PORT, conf.mode, 0, 0, 0);
-    ESP_LOGI(ARDUCAM_TAG,"i2c_driver_install returned %x",err);
+    if(err != ESP_OK)
+    	ESP_LOGW(ARDUCAM_TAG,"i2c_driver_install returned %x",err);
+}
+
+static void initSPI()
+{
+	esp_err_t err;
+	spi_device_handle_t spi;
+	spi_bus_config_t buscfg = {
+			.miso_io_num=ARDUCAM_MISO,
+			.mosi_io_num=ARDUCAM_MOSI,
+			.sclk_io_num=ARDUCAM_SCK,
+	        .quadwp_io_num=-1,
+	        .quadhd_io_num=-1
+	};
+
+	spi_device_interface_config_t devcfg = {
+			.clock_speed_hz=1000000,
+			.mode=0,
+			.spics_io_num=ARDUCAM_CS,
+			.queue_size=1
+	};
+
+	err = spi_bus_initialize(HSPI_HOST, &buscfg,1);
+	ESP_LOGI(ARDUCAM_TAG,"spi_bus_init %x",err);
+	//assert(err=ESP_OK);
+
+	err=spi_bus_add_device(HSPI_HOST,&devcfg,&spi);
+	ESP_LOGI(ARDUCAM_TAG,"spi_bus_add_device %x",err);
+	//assert(err=ESP_OK);
+
+	spi_transaction_t t;
+	memset(&t,0,sizeof(t));
+
+	uint8_t spi_data[2];
+	spi_data[0] = 0x00 | 0x80;
+	spi_data[1] = 0x55;
+
+	t.length=16;
+	t.tx_buffer=spi_data;
+	err=spi_device_transmit(spi,&t);
+	ESP_LOGI(ARDUCAM_TAG,"spi_device_transmit %x",err);
+	//assert(err == ESP_OK);
+
+	memset(&t,0,sizeof(t));
+	t.length=8;
+	spi_data[0] = 0x00 & 0x7f;
+	t.tx_buffer=spi_data;
+	err=spi_device_transmit(spi,&t);
+	ESP_LOGI(ARDUCAM_TAG,"spi_device_transmit %x",err);
+	//assert(err == ESP_OK);
+
+	memset(&t,0,sizeof(t));
+	t.length=8;
+	t.rx_buffer=spi_data;
+	err=spi_device_transmit(spi,&t);
+	ESP_LOGI(ARDUCAM_TAG,"spi_device_transmit %x",err);
+	//assert(err == ESP_OK);
+
+	ESP_LOGI(ARDUCAM_TAG,"SPI_DATA is %x", spi_data[0]);
+}
+
+void ArduCam_init()
+{
+
+	initI2C();
+	initSPI();
 
     // Initialize OV5642 for JPG as OV5642_MINI_5MP_PLUS
     wrSensorReg16_8(0x3008, 0x80);
@@ -847,10 +948,9 @@ void ArduCam_init()
 
     uint8_t vid;
     uint8_t pid;
-    err = rdSensorReg16_8(OV5642_CHIPID_HIGH,&vid);
-    ESP_LOGI(ARDUCAM_TAG,"VID Err %x",err);
-    err = rdSensorReg16_8(OV5642_CHIPID_LOW,&pid);
-    ESP_LOGI(ARDUCAM_TAG,"PID Err %x",err);
-    ESP_LOGI(ARDUCAM_TAG,"VID = %x, PID = %x",vid,pid);
+    rdSensorReg16_8(OV5642_CHIPID_HIGH,&vid);
+    rdSensorReg16_8(OV5642_CHIPID_LOW,&pid);
+    if((vid != 0x56) | (pid != 0x42))
+    	ESP_LOGW(ARDUCAM_TAG,"Invalid Chip ID, VID = %x, PID = %x",vid,pid);
 
 }
