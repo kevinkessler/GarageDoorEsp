@@ -13,14 +13,40 @@ struct sensor_reg {
 	uint16_t val;
 };
 
+#define ARDUCHIP_TEST1						0x00
+#define ARDUCHIP_TIM							0x03
+#define VSYNC_LEVEL_MASK						0x02
+#define ARDUCHIP_FRAMES			  			0x01
+#define ARDUCHIP_FIFO      					0x04
+#define FIFO_CLEAR_MASK    					0x01
+#define FIFO_START_MASK    					0x02
+
+#define ARDUCHIP_GPIO			  			0x06  //GPIO Write Register
+#define GPIO_RESET_MASK						0x01  //0 = Sensor reset,			    1 =  Sensor normal operation
+#define GPIO_PWDN_MASK						0x02  //0 = Sensor normal operation, 	1 = Sensor standby
+#define GPIO_PWREN_MASK						0x04  //0 = Sensor LDO disable, 			1 = sensor LDO enable
+
+
+#define FIFO_SIZE1							0x42  //Camera write FIFO size[7:0] for burst to read
+#define FIFO_SIZE2							0x43  //Camera write FIFO size[15:8]
+#define FIFO_SIZE3							0x44  //Camera write FIFO size[18:16]
+
+#define ARDUCHIP_TRIG      					0x41  //Trigger source
+#define VSYNC_MASK         					0x01
+#define SHUTTER_MASK       					0x02
+#define CAP_DONE_MASK      					0x08
+
+#define BURST_FIFO_READ						0x3C  //Burst FIFO read operation
+#define SINGLE_FIFO_READ						0x3D  //Single FIFO read operation
+
 #define OV5642_320x240 		  				0
 #define OV5642_640x480		  				1
 #define OV5642_1024x768		  				2
-#define OV5642_1280x960 	  				3
-#define OV5642_1600x1200	  				4
-#define OV5642_2048x1536	  				5
-#define OV5642_2592x1944	  				6
-#define OV5642_1920x1080	  				7
+#define OV5642_1280x960 	  					3
+#define OV5642_1600x1200	  					4
+#define OV5642_2048x1536	  					5
+#define OV5642_2592x1944	  					6
+#define OV5642_1920x1080	  					7
 
 #define Auto_Sharpness_default              0
 #define Auto_Sharpness1                     1
