@@ -30,7 +30,15 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
     case SYSTEM_EVENT_STA_GOT_IP:
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     	ESP_LOGI("MAIN", "got ip:%s\n",ip4addr_ntoa(&event->event_info.got_ip.ip_info.ip));
-    	init_mqtt();
+    	//init_mqtt();
+    	for(int n=5;n>0;n--)
+    	{
+    		ESP_LOGI("MAIN","Exposure Level %d",n);
+//    		ArduCam_set_Exposure_level(5);
+    		takePicture();
+    		vTaskDelay(20000/portTICK_RATE_MS);
+    	}
+
         break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
         /* This is a workaround as ESP32 WiFi libs don't currently
@@ -134,19 +142,19 @@ static bool initWifi()
 
 void app_main(void)
 {
-/*	initRGBLed();
+	initRGBLed();
 	ESP_LOGI("MAIN","initBack");
 	if(!initWifi())
 	{
 		setRGBColor(RGB_BLINK_SLOW,RGB_BLUE);
 		initBluetooth();
 	}
-	else
+/*	else
 	{
 		setRGBColor(RGB_BLINK_SLOW,RGB_GREEN);
 		startHttpsTask();
 	}*/
 
-	ArduCam_init();
+	initCamera();
 }
 

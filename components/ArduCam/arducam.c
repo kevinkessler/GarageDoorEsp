@@ -14,22 +14,24 @@
 #include "esp_log.h"
 #include "arducam.h"
 #include "ov5642_regs.h"
-#include "esp_heap_alloc_caps.h"
+#include "esp_heap_caps.h"
 
 // Pin assignments
 #define ARDUCAM_SDA 21
 #define ARDUCAM_SCL 22
-#define ARDUCAM_MOSI 18
-#define ARDUCAM_MISO 13
-#define ARDUCAM_SCK 14
+#define ARDUCAM_MOSI 23
+#define ARDUCAM_MISO 19
+#define ARDUCAM_SCK 18
 #define ARDUCAM_CS 15
 //#define ARDUCAM_SPI_CLOCK_HZ 8000000
-#define ARDUCAM_SPI_CLOCK_HZ 1000000
+#define ARDUCAM_SPI_CLOCK_HZ 2000000
 
 #define ARDUCAM_ADDR 0x78
-#define ARDUCAM_I2C_FREQ_HZ 400000
+#define ARDUCAM_I2C_FREQ_HZ 100000
 #define ARDUCAM_I2C_PORT 0
 #define ARDUCAM_TAG "ArduCam"
+
+#define RX_BUFFER_SIZE 1280
 
 // Make Eclipse stop complaining
 #define true 1
@@ -37,6 +39,9 @@
 
 
 static spi_device_handle_t spi;
+static uint8_t *rxBuffer;
+static uint32_t fifo_len;
+static uint32_t current_len;
 
 /*
 static uint8_t wrSensorReg8_8(uint8_t regID, uint8_t regDat)
@@ -68,6 +73,7 @@ static uint8_t wrSensorReg16_8(uint16_t regID, uint8_t regDat)
 	uint8_t cmd[3];
 	esp_err_t err;
 
+
 	cmd[0]= (ARDUCAM_ADDR) | I2C_MASTER_WRITE;
 	cmd[1] = (regID >> 8) & 0xff;
 	cmd[2] = regID & 0xff;
@@ -84,7 +90,7 @@ static uint8_t wrSensorReg16_8(uint16_t regID, uint8_t regDat)
     if(err == ESP_OK)
     		return 1;
 
-    ESP_LOGW("ARDUCAM_TAG","wrSensorReg16_8 returned %x",err);
+    ESP_LOGW(ARDUCAM_TAG,"wrSensorReg16_8 returned %x",err);
     return 0;
 
 }
@@ -98,12 +104,14 @@ static uint8_t wrSensorRegs16_8(const struct sensor_reg reglist[])
 
 	//i2c_cmd_handle_t i2c_handle=i2c_cmd_link_create();
 
-	while((reg_addr != 0xffff) | (reg_val != 0xff))
+	do
 	{
+
 		wrSensorReg16_8(reg_addr,reg_val);
-		next++;
 		reg_addr=next->reg;
 		reg_val=next->val;
+		next++;
+
 
 
 /*		*cmd= (ARDUCAM_ADDR) | I2C_MASTER_WRITE;
@@ -117,7 +125,7 @@ static uint8_t wrSensorRegs16_8(const struct sensor_reg reglist[])
 
 
 
-	}
+	}while((reg_addr != 0xffff) | (reg_val != 0xff));
 
 /*    i2c_master_stop(i2c_handle);
 
@@ -171,15 +179,15 @@ static void ArduCam_write_reg(uint8_t addr, uint8_t data)
 	spi_transaction_t t;
 	memset(&t,0,sizeof(t));
 
-	uint8_t spi_data[2];
-	spi_data[0] = addr | 0x80;
-	spi_data[1] = data;
+	t.flags = SPI_TRANS_USE_TXDATA;
+	t.length=8;
 
-	t.length=16;
-	t.tx_buffer=spi_data;
+	t.command = addr | 0x80;
+	t.tx_data[0]=data;
 	err=spi_device_transmit(spi,&t);
 	if(err != ESP_OK)
 		ESP_LOGW(ARDUCAM_TAG,"spi_device_transmit error %x",err);
+
 
 }
 
@@ -187,13 +195,13 @@ static uint8_t ArduCam_read_reg(uint8_t addr)
 {
 	esp_err_t err;
 	spi_transaction_t t;
-	uint8_t spi_data;
+
 
 	memset(&t,0,sizeof(t));
+	t.flags = SPI_TRANS_USE_RXDATA;
+	t.rxlength=8;
+	t.command = addr & 0x7f;
 
-	t.length=8;
-	spi_data = addr & 0x7f;
-	t.tx_buffer=&spi_data;
 	err=spi_device_transmit(spi,&t);
 	if(err != ESP_OK)
 	{
@@ -202,16 +210,31 @@ static uint8_t ArduCam_read_reg(uint8_t addr)
 	}
 
 
-	memset(&t,0,sizeof(t));
-	t.length=8;
-	t.rx_buffer=&spi_data;
-	err=spi_device_transmit(spi,&t);
-	if (err != ESP_OK)
-	{
-		ESP_LOGI(ARDUCAM_TAG,"read_reg spi_device_transmit error %x",err);
-	}
+	return t.rx_data[0];
+}
 
-	return spi_data;
+void ArduCam_set_bit(uint8_t addr, uint8_t bit)
+{
+	uint8_t temp;
+
+	temp = ArduCam_read_reg(addr);
+	ArduCam_write_reg(addr, temp | bit);
+}
+
+void ArduCam_clear_bit(uint8_t addr, uint8_t bit)
+{
+	uint8_t temp;
+
+	temp = ArduCam_read_reg(addr);
+	ArduCam_write_reg(addr, temp & (~bit));
+}
+
+uint8_t ArduCam_get_bit(uint8_t addr, uint8_t bit)
+{
+  uint8_t temp;
+  temp = ArduCam_read_reg(addr);
+  temp = temp & bit;
+  return temp;
 }
 
 void ArduCam_set_RAW_size(uint8_t size)
@@ -545,84 +568,84 @@ void ArduCam_set_hue(uint8_t degree)
 			wrSensorReg16_8(0x5581 ,0x80);
 			wrSensorReg16_8(0x5582 ,0x00);
 			wrSensorReg16_8(0x558a ,0x32);
-		break;
+			break;
 		case degree_150:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x6f);
 			wrSensorReg16_8(0x5582 ,0x40);
 			wrSensorReg16_8(0x558a ,0x32);
-		break;
+			break;
 		case degree_120:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x40);
 			wrSensorReg16_8(0x5582 ,0x6f);
 			wrSensorReg16_8(0x558a ,0x32);
-		break;
+			break;
 		case degree_90:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x00);
 			wrSensorReg16_8(0x5582 ,0x80);
 			wrSensorReg16_8(0x558a ,0x02);
-		break;
+			break;
 		case degree_60:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x40);
 			wrSensorReg16_8(0x5582 ,0x6f);
 			wrSensorReg16_8(0x558a ,0x02);
-		break;
+			break;
 		case degree_30:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x6f);
 			wrSensorReg16_8(0x5582 ,0x40);
 			wrSensorReg16_8(0x558a ,0x02);
-		break;
+			break;
 		case degree_0:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x80);
 			wrSensorReg16_8(0x5582 ,0x00);
 			wrSensorReg16_8(0x558a ,0x01);
-		break;
+			break;
 		case degree30:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x6f);
 			wrSensorReg16_8(0x5582 ,0x40);
 			wrSensorReg16_8(0x558a ,0x01);
-		break;
+			break;
 		case degree60:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x40);
 			wrSensorReg16_8(0x5582 ,0x6f);
 			wrSensorReg16_8(0x558a ,0x01);
-		break;
+			break;
 		case degree90:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x00);
 			wrSensorReg16_8(0x5582 ,0x80);
 			wrSensorReg16_8(0x558a ,0x31);
-		break;
+			break;
 		case degree120:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x40);
 			wrSensorReg16_8(0x5582 ,0x6f);
 			wrSensorReg16_8(0x558a ,0x31);
-		break;
+			break;
 		case degree150:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x01);
 			wrSensorReg16_8(0x5581 ,0x6f);
 			wrSensorReg16_8(0x5582 ,0x40);
 			wrSensorReg16_8(0x558a ,0x31);
-		break;
+			break;
 	}
 
 }
@@ -637,45 +660,53 @@ void ArduCam_set_Special_effects(uint8_t Special_effect)
 			wrSensorReg16_8(0x5580 ,0x18);
 			wrSensorReg16_8(0x5585 ,0xa0);
 			wrSensorReg16_8(0x5586 ,0x40);
-		break;
+			break;
 		case Greenish:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x18);
 			wrSensorReg16_8(0x5585 ,0x60);
 			wrSensorReg16_8(0x5586 ,0x60);
-		break;
+			break;
 		case Reddish:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x18);
 			wrSensorReg16_8(0x5585 ,0x80);
 			wrSensorReg16_8(0x5586 ,0xc0);
-		break;
+			break;
 		case BW:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x18);
 			wrSensorReg16_8(0x5585 ,0x80);
 			wrSensorReg16_8(0x5586 ,0x80);
-		break;
+			break;
 		case Negative:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x40);
-		break;
+			break;
 
-			case Sepia:
+		case Sepia:
 			wrSensorReg16_8(0x5001 ,0xff);
 			wrSensorReg16_8(0x5580 ,0x18);
 			wrSensorReg16_8(0x5585 ,0x40);
 			wrSensorReg16_8(0x5586 ,0xa0);
-		break;
+			break;
 		case Normal:
 			wrSensorReg16_8(0x5001 ,0x7f);
 			wrSensorReg16_8(0x5580 ,0x00);
-		break;
+			break;
 	}
 }
 
 void ArduCam_set_Exposure_level(uint8_t level)
 {
+	uint8_t is_off = ArduCam_get_bit(ARDUCHIP_GPIO,GPIO_PWDN_MASK);
+	ESP_LOGI(ARDUCAM_TAG,"Power Bit %x",is_off);
+	if(is_off)
+	{
+		ArduCam_clear_bit(ARDUCHIP_GPIO,GPIO_PWDN_MASK);
+		vTaskDelay(100/portTICK_RATE_MS);
+	}
+
 	switch(level)
 	{
 		case Exposure_17_EV:
@@ -765,7 +796,11 @@ void ArduCam_set_Exposure_level(uint8_t level)
 			wrSensorReg16_8(0x3a1f ,0x20);
 		break;
 	}
+
+	/*if(is_off)
+		ArduCam_set_bit(ARDUCHIP_GPIO,GPIO_PWDN_MASK);*/
 }
+
 void ArduCam_set_Sharpness(uint8_t Sharpness)
 {
 	switch(Sharpness)
@@ -867,7 +902,6 @@ void ArduCam_set_Mirror_Flip(uint8_t Mirror_Flip)
 	}
 }
 
-
 void ArduCam_set_Compress_quality(uint8_t quality)
 {
 switch(quality)
@@ -906,33 +940,10 @@ void ArduCam_Test_Pattern(uint8_t Pattern)
 	}
 
 }
+
 void ArduCam_clear_fifo_flag()
 {
 	ArduCam_write_reg(ARDUCHIP_FIFO, FIFO_CLEAR_MASK);
-}
-
-void ArduCam_set_bit(uint8_t addr, uint8_t bit)
-{
-	uint8_t temp;
-
-	temp = ArduCam_read_reg(addr);
-	ArduCam_write_reg(addr, temp | bit);
-}
-
-void ArduCam_clear_bit(uint8_t addr, uint8_t bit)
-{
-	uint8_t temp;
-
-	temp = ArduCam_read_reg(addr);
-	ArduCam_write_reg(addr, temp & (~bit));
-}
-
-uint8_t ArduCam_get_bit(uint8_t addr, uint8_t bit)
-{
-  uint8_t temp;
-  temp = ArduCam_read_reg(addr);
-  temp = temp & bit;
-  return temp;
 }
 
 void ArduCam_start_capture()
@@ -988,7 +999,8 @@ static uint8_t initSPI()
 			.clock_speed_hz=ARDUCAM_SPI_CLOCK_HZ,
 			.mode=0,
 			.spics_io_num=ARDUCAM_CS,
-			.queue_size=1
+			.queue_size=1,
+			.command_bits=8
 	};
 
 	err = spi_bus_initialize(HSPI_HOST, &buscfg,1);
@@ -1005,9 +1017,9 @@ static uint8_t initSPI()
 		return 0;
 	}
 
-	ArduCam_write_reg(ARDUCHIP_TEST1, 0x55);
+	ArduCam_write_reg(ARDUCHIP_TEST1, 0x56);
 	uint8_t result=ArduCam_read_reg(ARDUCHIP_TEST1);
-	if(result != 0x55)
+	if(result != 0x56)
 	{
 		ESP_LOGW(ARDUCAM_TAG,"SPI Test Failed with result = %x",result);
 		return 0;
@@ -1017,80 +1029,87 @@ static uint8_t initSPI()
 
 }
 
-void print_buffer(uint8_t *buffer, uint16_t len)
-{
-	uint16_t fullLines=len / 8;
-	uint8_t partLine = len % 8;
-
-	for (uint8_t n=0; n<fullLines + 1; n++)
-	{
-		ESP_LOGI(ARDUCAM_TAG,"%x %x %x %x %x %x %x %x",buffer[n*8],buffer[n*8+1],buffer[n*8+2],buffer[n*8+3],buffer[n*8+4],buffer[n*8+5],buffer[n*8+6],buffer[n*8+7]);
-	}
-
-}
-
-void transfer_picture()
+uint8_t ArduCam_read_buffer(uint8_t **buffer, uint16_t *length, uint8_t *is_more)
 {
 	spi_transaction_t t;
 	esp_err_t err;
 
-	uint32_t size=ArduCam_read_fifo_length();
-	ESP_LOGI(ARDUCAM_TAG,"FIFO Length %d",size);
+	*buffer = rxBuffer;
 
 	memset(&t,0,sizeof(t));
-
-	uint8_t spi_data = BURST_FIFO_READ;
-
-	t.length=8;
-	t.tx_buffer=&spi_data;
+	memset(rxBuffer,0,RX_BUFFER_SIZE);
+	t.command = BURST_FIFO_READ;
+	t.rx_buffer = rxBuffer;
+	t.rxlength = RX_BUFFER_SIZE * 8;
 	err=spi_device_transmit(spi,&t);
-	if(err != ESP_OK)
+	if(err != ESP_OK) {
 		ESP_LOGW(ARDUCAM_TAG,"spi_device_transmit error %x",err);
-
-	uint8_t *rxBuffer=pvPortMallocCaps(1280, MALLOC_CAP_DMA);
-
-	uint16_t fullBuffers=size/1280;
-	uint16_t partBuffer= size % 1280;
-
-	for (int n=0;n<fullBuffers;n++)
-	{
-		memset(&t,0,sizeof(t));
-
-		t.rx_buffer = rxBuffer;
-		t.length = 1280;
-		err=spi_device_transmit(spi,&t);
-		if(err != ESP_OK)
-			ESP_LOGW(ARDUCAM_TAG,"spi_device_transmit error %x",err);
-
-		print_buffer(rxBuffer,1280);
+		return err;
 	}
 
-	memset(&t,0,sizeof(t));
-	t.rx_buffer=rxBuffer;
-	t.length = partBuffer;
-	err=spi_device_transmit(spi,&t);
-	if(err != ESP_OK)
-		ESP_LOGW(ARDUCAM_TAG,"spi_device_transmit error %x",err);
 
-	print_buffer(rxBuffer,partBuffer);
+	uint8_t temp=0;
+	uint8_t prev_temp=0;
+	uint16_t real_len=0;
 
-	ArduCam_clear_fifo_flag();
+	for(int m = 0;m<RX_BUFFER_SIZE;m++)
+	{
+		prev_temp=temp;
+		temp=rxBuffer[m];
+		real_len++;
+		if((temp == 0xD9) && (prev_temp == 0xFF))
+		{
+			*length=real_len;
+			*is_more=0;
+			ESP_LOGI(ARDUCAM_TAG,"Length %d",*length);
+			return 0;
+		}
+	}
+
+	*is_more=1;
+	*length=RX_BUFFER_SIZE;
+	current_len+=*length;
+	if(current_len > fifo_len * 2)
+		return 1;
+
+	ESP_LOGI(ARDUCAM_TAG,"Length %d",*length);
+	return 0;
 }
 
-void take_picture()
+void ArduCam_cleanup()
+{
+	ArduCam_set_bit(ARDUCHIP_GPIO,GPIO_PWDN_MASK);
+	free(rxBuffer);
+}
+
+void ArduCam_take_picture()
 {
 	ArduCam_clear_bit(ARDUCHIP_GPIO,GPIO_PWDN_MASK);
+	vTaskDelay(100/portTICK_RATE_MS);
 	ArduCam_clear_fifo_flag();
-	ArduCam_write_reg(ARDUCHIP_FRAMES,0x00);
+	vTaskDelay(10/portTICK_RATE_MS);
+	ArduCam_clear_fifo_flag();
+	ArduCam_clear_fifo_flag();
+
+	ESP_LOGI(ARDUCAM_TAG,"Start Capture");
 
 	ArduCam_start_capture();
+	ESP_LOGI(ARDUCAM_TAG,"Waiting...");
+	for (int n = 0; n < 10 ; n++)
+	{
+		if(ArduCam_get_bit(ARDUCHIP_TRIG, CAP_DONE_MASK))
+		{
+			ESP_LOGI(ARDUCAM_TAG,"CAP DONE %d %x",n,ArduCam_read_reg(ARDUCHIP_TRIG));
+			break;
+		}
+		vTaskDelay(100/ portTICK_RATE_MS);
+	}
 
-	while(!ArduCam_get_bit(ARDUCHIP_TRIG, CAP_DONE_MASK));
+	rxBuffer=heap_caps_malloc(RX_BUFFER_SIZE, MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
+	fifo_len=ArduCam_read_fifo_length();
+	ESP_LOGI(ARDUCAM_TAG,"FIFO Length %d",fifo_len);
+	current_len=0;
 
-	uint32_t size=ArduCam_read_fifo_length();
-	ESP_LOGI(ARDUCAM_TAG,"FIFO Length %d",size);
-
-	transfer_picture();
 }
 
 void ArduCam_init()
@@ -1099,25 +1118,34 @@ void ArduCam_init()
 	initI2C();
 	initSPI();
 
-    // Initialize OV5642 for JPG as OV5642_MINI_5MP_PLUS
-    wrSensorReg16_8(0x3008, 0x80);
-    wrSensorRegs16_8(OV5642_QVGA_Preview);
-    wrSensorRegs16_8(ov5642_320x240);
-    wrSensorReg16_8(0x3818, 0xa8);
-    wrSensorReg16_8(0x3621, 0x10);
-    wrSensorReg16_8(0x3801, 0xb0);
-    wrSensorReg16_8(0x4407, 0x04);
+	ArduCam_clear_bit(ARDUCHIP_GPIO,GPIO_PWDN_MASK);
 
-    uint8_t vid;
-    uint8_t pid;
-    rdSensorReg16_8(OV5642_CHIPID_HIGH,&vid);
-    rdSensorReg16_8(OV5642_CHIPID_LOW,&pid);
-    if((vid != 0x56) | (pid != 0x42))
-    		ESP_LOGW(ARDUCAM_TAG,"Invalid Chip ID, VID = %x, PID = %x",vid,pid);
+	uint8_t vid;
+	uint8_t pid;
+	rdSensorReg16_8(OV5642_CHIPID_HIGH,&vid);
+	rdSensorReg16_8(OV5642_CHIPID_LOW,&pid);
+	if((vid != 0x56) | (pid != 0x42))
+		ESP_LOGW(ARDUCAM_TAG,"Invalid Chip ID, VID = %x, PID = %x",vid,pid);
 
-    ArduCam_write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);
-    ArduCam_set_bit(ARDUCHIP_GPIO,GPIO_PWDN_MASK);
-    vTaskDelay(800/ portTICK_RATE_MS);
 
-    take_picture();
+	// Initialize OV5642 for JPG as OV5642_MINI_5MP_PLUS
+	wrSensorReg16_8(0x3008, 0x80);
+	wrSensorRegs16_8(OV5642_QVGA_Preview);
+	vTaskDelay(200/portTICK_RATE_MS);
+	wrSensorRegs16_8(OV5642_JPEG_Capture_QSXGA);
+	wrSensorRegs16_8(ov5642_320x240);
+	vTaskDelay(100/portTICK_RATE_MS);
+	wrSensorReg16_8(0x3818, 0xa8);
+
+	wrSensorReg16_8(0x3621, 0x10);
+	wrSensorReg16_8(0x3801, 0xb0);
+	wrSensorReg16_8(0x4407, 0x04);
+	ArduCam_set_JPEG_size(OV5642_2592x1944);
+	ArduCam_write_reg(ARDUCHIP_FRAMES,0x00);
+	//ArduCam_set_Exposure_level(9);
+	ArduCam_set_Compress_quality(high_quality);
+	//ArduCam_set_Light_Mode(Advanced_AWB);
+
+	ArduCam_write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);
+	ArduCam_set_bit(ARDUCHIP_GPIO,GPIO_PWDN_MASK);
 }
